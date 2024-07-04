@@ -1,8 +1,8 @@
 import os
 import pdfplumber
-import pandas as pd
-import pyodbc
 from datetime import datetime
+import subprocess
+import pyodbc
 
 # Function to establish database connection
 def get_python_database_connection():
@@ -20,7 +20,7 @@ def get_python_database_connection():
         print(f"Database connection error: {e}")
         return None
 
-# Function to create the table Tenders in the database
+# Function to create Tenders table if it doesn't exist
 def create_temp_table_tenders():
     conn = get_python_database_connection()
     if conn is not None:
@@ -62,24 +62,43 @@ def create_temp_table_tenders():
     else:
         print("Failed to create connection to database.")
 
-# Function to convert PDF to HTML using pdfplumber
+# Function to convert PDF to HTML
 def pdf_to_html(pdf_path):
-    html_content = None
     try:
-        with pdfplumber.open(pdf_path) as pdf:
-            pages = []
-            for page in pdf.pages:
-                pages.append(page.extract_text())
-            html_content = '\n'.join(pages)
+        result = subprocess.run(['pdftohtml', pdf_path, '-stdout'], capture_output=True, text=True, check=True)
+        html_content = result.stdout
+        return html_content
+    except subprocess.CalledProcessError as e:
+        print(f"Error converting {pdf_path} to HTML:")
+        print(e)
+        return None
     except Exception as e:
-        print(f"Error converting {pdf_path} to HTML: {e}")
-    return html_content
+        print(f"Unexpected error converting {pdf_path} to HTML:")
+        print(e)
+        return None
 
-# Function to clean up text values
+# Function to clean value
 def clean_value(value):
     if value:
         return value.replace('\n', ' ').strip()
     return ''
+
+# Function to extract horizontal tables for address information
+def extract_horizontal_table(page):
+    tables = page.extract_tables()
+    address_set = set()
+
+    for table in tables:
+        for row_index, row in enumerate(table):
+            for cell_index, cell in enumerate(row):
+                if cell and ("Address" in cell or "पता" in cell):  # Adjust language as necessary
+                    if row_index + 1 < len(table):
+                        next_row = table[row_index + 1]
+                        if cell_index < len(next_row) and next_row[cell_index]:
+                            cleaned_address = clean_value(next_row[cell_index])
+                            address_set.add(cleaned_address)
+
+    return address_set
 
 # Function to extract data from PDF
 def extract_from_pdf(pdf_path):
@@ -90,6 +109,7 @@ def extract_from_pdf(pdf_path):
     organisation_name = None
     emd_amount = None
     estimated_bid_value = None
+    boq_title = None
     item_category = None
     msme_exemption = None
     startup_exemption = None
@@ -124,6 +144,8 @@ def extract_from_pdf(pdf_path):
                         emd_amount = cleaned_value
                     elif 'estimated bid value' in key:
                         estimated_bid_value = cleaned_value
+                    elif 'boq title' in key:
+                        boq_title = cleaned_value
                     elif 'item category' in key:
                         item_category = cleaned_value
                     elif 'mse exemption' in key:
@@ -133,7 +155,7 @@ def extract_from_pdf(pdf_path):
 
     contact_address = ', '.join(filter(None, [ministry, department_name]))
     organization_name = organisation_name or department_name or ministry
-    requirement_work_brief = f"supply of {item_category} | Quantity | {total_quantity} - MSME Exemption | {msme_exemption} - Startup Exemption | {startup_exemption}"
+    requirement_work_brief = f"supply of {boq_title} - {item_category} | Quantity | {total_quantity} - MSME Exemption | {msme_exemption} - Startup Exemption | {startup_exemption}"
     tender_prod_no = 'Y' if msme_exemption.lower() == 'yes' else 'N'
     contact_phone_2 = 'Y' if startup_exemption.lower() == 'yes' else 'N'
     crawling_date_time = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -142,7 +164,7 @@ def extract_from_pdf(pdf_path):
     html_content = pdf_to_html(pdf_path)
 
     data = {
-        'TenderNumber': pdf_path.replace('.pdf', ''),  # Use pdf_path for TenderNumber
+        'TenderNumber': os.path.basename(pdf_path).replace('.pdf', ''),  # Extract TenderNumber from filename
         'TenderEndSubmissionDateTime': bid_opening_date,
         'ContactNumber': total_quantity,
         'TenderType': 'buy',
@@ -152,59 +174,50 @@ def extract_from_pdf(pdf_path):
         'CrawlingDateTime': crawling_date_time,
         'EarnestMoneyDeposite': emd_amount,
         'TenderEstimatedCost': estimated_bid_value,
-        'Address': ' '.join(list(address_set)),
+        'Address': ', '.join(list(address_set)),
         'RequirementWorkBrief': requirement_work_brief,
         'TenderProdNo': tender_prod_no,
         'ContactPhone2': contact_phone_2,
-        'TenderDetailWorkDescription': f"{item_category}",
+        'TenderDetailWorkDescription': f"{boq_title} - {item_category}",
         'HTMLcontent': html_content,
-        'Document': '', # Empty field for document
+        'Document': '',  # Placeholder for Document field
         'OrganizationName': organization_name
     }
 
     return data
 
-# Function to extract horizontal table data
-def extract_horizontal_table(page):
-    tables = page.extract_tables()
-    address_set = set()
-
-    for table in tables:
-        for row_index, row in enumerate(table):
-            for cell_index, cell in enumerate(row):
-                if cell and ("Address" in cell or "पता" in cell):  # Adjust language as necessary
-                    if row_index + 1 < len(table):
-                        next_row = table[row_index + 1]
-                        if cell_index < len(next_row) and next_row[cell_index]:
-                            cleaned_address = clean_value(next_row[cell_index])
-                            address_set.add(cleaned_address)
-
-    return address_set
-
-# Function to insert data into the database
+# Function to insert data into database with check for existing TenderNumber
 def insert_into_database(data):
     conn = get_python_database_connection()
     if conn is not None:
         try:
             with conn.cursor() as cursor:
-                cursor.execute(
-                    """
-                    INSERT INTO Tenders (
-                        TenderNumber, TenderEndSubmissionDateTime, ContactNumber, TenderType,
-                        TenderOpeningDateTime, ContactAddress, NameOfWebSite, CrawlingDateTime,
-                        EarnestMoneyDeposite, TenderEstimatedCost, Address, RequirementWorkBrief,
-                        TenderProdNo, ContactPhone2, TenderDetailWorkDescription, HTMLcontent, Document, OrganizationName
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        data['TenderNumber'], data['TenderEndSubmissionDateTime'], data['ContactNumber'], data['TenderType'],
-                        data['TenderOpeningDateTime'], data['ContactAddress'], data['NameOfWebSite'], data['CrawlingDateTime'],
-                        data['EarnestMoneyDeposite'], data['TenderEstimatedCost'], data['Address'], data['RequirementWorkBrief'],
-                        data['TenderProdNo'], data['ContactPhone2'], data['TenderDetailWorkDescription'], data['HTMLcontent'], data['Document'], data['OrganizationName']
+                # Check if TenderNumber already exists
+                cursor.execute("SELECT 1 FROM Tenders WHERE TenderNumber = ?", (data['TenderNumber'],))
+                existing_record = cursor.fetchone()
+
+                if existing_record:
+                    print(f"TenderNumber '{data['TenderNumber']}' already exists in the database. Skipping insertion.")
+                else:
+                    # Insert new record
+                    cursor.execute(
+                        """
+                        INSERT INTO Tenders (
+                            TenderNumber, TenderEndSubmissionDateTime, ContactNumber, TenderType,
+                            TenderOpeningDateTime, ContactAddress, NameOfWebSite, CrawlingDateTime,
+                            EarnestMoneyDeposite, TenderEstimatedCost, Address, RequirementWorkBrief,
+                            TenderProdNo, ContactPhone2, TenderDetailWorkDescription, HTMLcontent, Document, OrganizationName
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            data['TenderNumber'], data['TenderEndSubmissionDateTime'], data['ContactNumber'], data['TenderType'],
+                            data['TenderOpeningDateTime'], data['ContactAddress'], data['NameOfWebSite'], data['CrawlingDateTime'],
+                            data['EarnestMoneyDeposite'], data['TenderEstimatedCost'], data['Address'], data['RequirementWorkBrief'],
+                            data['TenderProdNo'], data['ContactPhone2'], data['TenderDetailWorkDescription'], data['HTMLcontent'], data['Document'], data['OrganizationName']
+                        )
                     )
-                )
-                conn.commit()
-                print(f"Data inserted successfully for TenderNumber: {data['TenderNumber']}")
+                    conn.commit()
+                    print(f"Data inserted successfully for TenderNumber: {data['TenderNumber']}")
         except Exception as e:
             print(f"Error inserting data into the database: {e}")
         finally:
@@ -212,24 +225,20 @@ def insert_into_database(data):
     else:
         print("Failed to establish connection to database.")
 
-# Define the directory path and Excel file path
-directory_path = 'GEM/2024/B'  # Replace with your directory path
-excel_path = "GemProjectBidTest.xlsx"  # Replace with your desired Excel file path
+# Define directory path containing PDF files
+directory_path = 'GEM/2024/B'
 
-# Define all column headers including existing ones and those extracted from PDFs
-all_columns = [
-    'TenderNumber', 'TenderEndSubmissionDateTime', 'ContactNumber', 'TenderType',
-    'TenderOpeningDateTime', 'ContactAddress', 'NameOfWebSite', 'CrawlingDateTime',
-    'EarnestMoneyDeposite', 'TenderEstimatedCost', 'Address', 'RequirementWorkBrief',
-    'TenderProdNo', 'ContactPhone2', 'TenderDetailWorkDescription', 'HTMLcontent', 'Document', 'OrganizationName'
-]
-
-# Create the initial table if it does not exist
+# Ensure Tenders table exists in the database
 create_temp_table_tenders()
 
-# Iterate through each PDF file in the directory
+# Process each PDF file in the directory
 for filename in os.listdir(directory_path):
-    if filename.endswith(".pdf"):
+    if filename.endswith('.pdf'):
         pdf_path = os.path.join(directory_path, filename)
         extracted_data = extract_from_pdf(pdf_path)
-        insert_into_database(extracted_data)
+        if extracted_data:
+            insert_into_database(extracted_data)
+        else:
+            print(f"Failed to extract data from {pdf_path}")
+    else:
+        continue
