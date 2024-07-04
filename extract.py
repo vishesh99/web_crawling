@@ -1,36 +1,14 @@
 import os
 import pdfplumber
 import pandas as pd
-from datetime import datetime
-import subprocess
 import pyodbc
-import logging
-
-# Configure logging if needed
-# logging.basicConfig(level=logging.INFO)
-# logger = logging.getLogger(__name__)
-
-# Function to convert PDF to HTML using pdftohtml
-def pdf_to_html(pdf_path):
-    html_path = pdf_path.replace('.pdf', '.html')
-    try:
-        result = subprocess.run(['pdftohtml', pdf_path, '-stdout'], capture_output=True, text=True, check=True)
-        html_content = result.stdout
-        return html_content
-    except subprocess.CalledProcessError as e:
-        print(f"Error converting {pdf_path} to HTML:")
-        print(e)
-        return None
-    except Exception as e:
-        print(f"Unexpected error converting {pdf_path} to HTML:")
-        print(e)
-        return None
+from datetime import datetime
 
 # Function to establish database connection
 def get_python_database_connection():
     try:
         con = pyodbc.connect(
-            "DRIVER={ODBC Driver 18 for Sql Server};"
+            "DRIVER={ODBC Driver 17 for Sql Server};"
             "SERVER=192.168.8.10,1433;"
             "DATABASE=Python;"
             "UID=sa;"
@@ -39,92 +17,72 @@ def get_python_database_connection():
         )
         return con
     except pyodbc.Error as e:
-        # If using logging:
-        # logger.error(f"Database connection error: {e}")
         print(f"Database connection error: {e}")
         return None
 
-# Function to insert data into the database
-def insert_into_database(data):
-    con = None
+# Function to create the table Tenders in the database
+def create_temp_table_tenders():
+    conn = get_python_database_connection()
+    if conn is not None:
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'Tenders')
+                    BEGIN
+                    CREATE TABLE [dbo].[Tenders](
+                        [TenderNumber] [nvarchar](max) NULL,
+                        [TenderEndSubmissionDateTime] [nvarchar](max) NULL,
+                        [ContactNumber] [nvarchar](max) NULL,
+                        [TenderType] [nvarchar](max) NULL,
+                        [TenderOpeningDateTime] [nvarchar](max) NULL,
+                        [ContactAddress] [nvarchar](max) NULL,
+                        [NameOfWebSite] [nvarchar](max) NULL,
+                        [CrawlingDateTime] [nvarchar](max) NULL,
+                        [EarnestMoneyDeposite] [nvarchar](max) NULL,
+                        [TenderEstimatedCost] [nvarchar](max) NULL,
+                        [Address] [nvarchar](max) NULL,
+                        [RequirementWorkBrief] [nvarchar](max) NULL,
+                        [TenderProdNo] [nvarchar](max) NULL,
+                        [ContactPhone2] [nvarchar](max) NULL,
+                        [TenderDetailWorkDescription] [nvarchar](max) NULL,
+                        [HTMLcontent] [nvarchar](max) NULL,
+                        [Document] [nvarchar](max) NULL,
+                        [OrganizationName] [nvarchar](max) NULL
+                    );
+                    END
+                    """
+                )
+                print("Successfully created table Tenders.")
+        except Exception as e:
+            print(f"Failed to create table: {e}")
+        finally:
+            conn.commit()
+            conn.close()
+    else:
+        print("Failed to create connection to database.")
+
+# Function to convert PDF to HTML using pdfplumber
+def pdf_to_html(pdf_path):
+    html_content = None
     try:
-        con = get_python_database_connection()
-        if con:
-            cursor = con.cursor()
-
-            # Example SQL query for inserting data into a table named 'Tenders'
-            sql_query = """
-                INSERT INTO Tenders (TenderNumber, TenderEndSubmissionDateTime, ContactNumber, TenderType,
-                TenderOpeningDateTime, ContactAddress, NameOfWebSite, CrawlingDateTime, EarnestMoneyDeposite,
-                TenderEstimatedCost, Address, RequirementWorkBrief, TenderProdNo, ContactPhone2,
-                TenderDetailWorkDescription, HTMLcontent, Document, OrganizationName)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """
-
-            # Extract values from the data dictionary
-            values = (
-                data['TenderNumber'], data['TenderEndSubmissionDateTime'], data['ContactNumber'], data['TenderType'],
-                data['TenderOpeningDateTime'], data['ContactAddress'], data['NameOfWebSite'], data['CrawlingDateTime'],
-                data['EarnestMoneyDeposite'], data['TenderEstimatedCost'], data['Address'], data['RequirementWorkBrief'],
-                data['TenderProdNo'], data['ContactPhone2'], data['TenderDetailWorkDescription'], data['HTMLcontent'],
-                data['Document'], data['OrganizationName']
-            )
-
-            # Execute the SQL query
-            cursor.execute(sql_query, values)
-            con.commit()
-
-            print("Data inserted successfully into the database.")
-        else:
-            print("Error: Database connection is not established.")
+        with pdfplumber.open(pdf_path) as pdf:
+            pages = []
+            for page in pdf.pages:
+                pages.append(page.extract_text())
+            html_content = '\n'.join(pages)
     except Exception as e:
-        # If using logging:
-        # logger.error(f"Error inserting data into the database: {str(e)}")
-        print(f"Error inserting data into the database: {str(e)}")
-    finally:
-        if con:
-            con.close()
+        print(f"Error converting {pdf_path} to HTML: {e}")
+    return html_content
 
-# Define the directory path and Excel file path
-directory_path = 'GEM/2024/B'  # Replace with your directory path
-excel_path = "GemProjectBidTest.xlsx"  # Replace with your desired Excel file path
-
-# Define all column headers including existing ones and those extracted from PDFs
-all_columns = [
-    'TenderNumber', 'TenderEndSubmissionDateTime', 'ContactNumber', 'TenderType',
-    'TenderOpeningDateTime', 'ContactAddress', 'NameOfWebSite', 'CrawlingDateTime',
-    'EarnestMoneyDeposite', 'TenderEstimatedCost', 'Address', 'RequirementWorkBrief',
-    'TenderProdNo', 'ContactPhone2', 'TenderDetailWorkDescription', 'HTMLcontent', 'Document', 'OrganizationName'
-]
-
+# Function to clean up text values
 def clean_value(value):
     if value:
         return value.replace('\n', ' ').strip()
     return ''
 
-def clean_address(address):
-    if address:
-        cleaned_address = address.replace('\n', ' ').replace('*', '').strip()
-        return cleaned_address
-    return ''
-
-def extract_horizontal_table(page):
-    tables = page.extract_tables()
-    address_set = set()
-
-    for table in tables:
-        for row_index, row in enumerate(table):
-            for cell_index, cell in enumerate(row):
-                if cell and ("Address" in cell or "पता" in cell):  # Adjust language as necessary
-                    if row_index + 1 < len(table):
-                        next_row = table[row_index + 1]
-                        if cell_index < len(next_row) and next_row[cell_index]:
-                            cleaned_address = clean_address(next_row[cell_index])
-                            address_set.add(cleaned_address)
-
-    return list(address_set)
-
-def extract_from_pdf(pdf_path, pdf_path_for_excel):
+# Function to extract data from PDF
+def extract_from_pdf(pdf_path):
     bid_opening_date = None
     total_quantity = None
     ministry = None
@@ -132,7 +90,6 @@ def extract_from_pdf(pdf_path, pdf_path_for_excel):
     organisation_name = None
     emd_amount = None
     estimated_bid_value = None
-    boq_title = None
     item_category = None
     msme_exemption = None
     startup_exemption = None
@@ -167,8 +124,6 @@ def extract_from_pdf(pdf_path, pdf_path_for_excel):
                         emd_amount = cleaned_value
                     elif 'estimated bid value' in key:
                         estimated_bid_value = cleaned_value
-                    elif 'boq title' in key:
-                        boq_title = cleaned_value
                     elif 'item category' in key:
                         item_category = cleaned_value
                     elif 'mse exemption' in key:
@@ -178,16 +133,16 @@ def extract_from_pdf(pdf_path, pdf_path_for_excel):
 
     contact_address = ', '.join(filter(None, [ministry, department_name]))
     organization_name = organisation_name or department_name or ministry
-    requirement_work_brief = f"supply of {boq_title} - {item_category} | Quantity | {total_quantity} - MSME Exemption | {msme_exemption} - Startup Exemption | {startup_exemption}"
-    tender_prod_no = 'Y' if msme_exemption and msme_exemption.lower() == 'yes' else 'N'
-    contact_phone_2 = 'Y' if startup_exemption and startup_exemption.lower() == 'yes' else 'N'
-    crawling_date_time = datetime.now().strftime("%Y-%m-%d %H:%M")  # Ensure datetime module is imported
+    requirement_work_brief = f"supply of {item_category} | Quantity | {total_quantity} - MSME Exemption | {msme_exemption} - Startup Exemption | {startup_exemption}"
+    tender_prod_no = 'Y' if msme_exemption.lower() == 'yes' else 'N'
+    contact_phone_2 = 'Y' if startup_exemption.lower() == 'yes' else 'N'
+    crawling_date_time = datetime.now().strftime("%Y-%m-%d %H:%M")
 
     # Convert PDF to HTML
     html_content = pdf_to_html(pdf_path)
 
     data = {
-        'TenderNumber': pdf_path.replace('_0.pdf', ''),  # Extract tender number from pdf_path
+        'TenderNumber': pdf_path.replace('.pdf', ''),  # Use pdf_path for TenderNumber
         'TenderEndSubmissionDateTime': bid_opening_date,
         'ContactNumber': total_quantity,
         'TenderType': 'buy',
@@ -201,60 +156,80 @@ def extract_from_pdf(pdf_path, pdf_path_for_excel):
         'RequirementWorkBrief': requirement_work_brief,
         'TenderProdNo': tender_prod_no,
         'ContactPhone2': contact_phone_2,
-        'TenderDetailWorkDescription': f"{boq_title} - {item_category}",
-        'HTMLcontent': html_content,  # Add HTML content to the DataFrame
-        'Document': '',  # Empty field for Document
-        'OrganizationName': organisation_name  # Organization Name field
+        'TenderDetailWorkDescription': f"{item_category}",
+        'HTMLcontent': html_content,
+        'Document': '', # Empty field for document
+        'OrganizationName': organization_name
     }
 
     return data
 
-# Load existing Excel file if it exists
-existing_tenders = set()
-df_existing = pd.DataFrame(columns=all_columns)  # Create an empty DataFrame with all columns
+# Function to extract horizontal table data
+def extract_horizontal_table(page):
+    tables = page.extract_tables()
+    address_set = set()
 
-if os.path.exists(excel_path):
-    try:
-        df_existing = pd.read_excel(excel_path)
-        if 'TenderNumber' in df_existing.columns:
-            existing_tenders.update(df_existing['TenderNumber'].astype(str))  # Convert to string for consistency
-        else:
-            print("Warning: 'TenderNumber' column not found in existing Excel file.")
-    except Exception as e:
-        print(f"Error loading existing Excel file: {str(e)}")
+    for table in tables:
+        for row_index, row in enumerate(table):
+            for cell_index, cell in enumerate(row):
+                if cell and ("Address" in cell or "पता" in cell):  # Adjust language as necessary
+                    if row_index + 1 < len(table):
+                        next_row = table[row_index + 1]
+                        if cell_index < len(next_row) and next_row[cell_index]:
+                            cleaned_address = clean_value(next_row[cell_index])
+                            address_set.add(cleaned_address)
 
-# Extract data from the PDF directory and get updated existing tenders
-extracted_data_list = []
+    return address_set
 
+# Function to insert data into the database
+def insert_into_database(data):
+    conn = get_python_database_connection()
+    if conn is not None:
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO Tenders (
+                        TenderNumber, TenderEndSubmissionDateTime, ContactNumber, TenderType,
+                        TenderOpeningDateTime, ContactAddress, NameOfWebSite, CrawlingDateTime,
+                        EarnestMoneyDeposite, TenderEstimatedCost, Address, RequirementWorkBrief,
+                        TenderProdNo, ContactPhone2, TenderDetailWorkDescription, HTMLcontent, Document, OrganizationName
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        data['TenderNumber'], data['TenderEndSubmissionDateTime'], data['ContactNumber'], data['TenderType'],
+                        data['TenderOpeningDateTime'], data['ContactAddress'], data['NameOfWebSite'], data['CrawlingDateTime'],
+                        data['EarnestMoneyDeposite'], data['TenderEstimatedCost'], data['Address'], data['RequirementWorkBrief'],
+                        data['TenderProdNo'], data['ContactPhone2'], data['TenderDetailWorkDescription'], data['HTMLcontent'], data['Document'], data['OrganizationName']
+                    )
+                )
+                conn.commit()
+                print(f"Data inserted successfully for TenderNumber: {data['TenderNumber']}")
+        except Exception as e:
+            print(f"Error inserting data into the database: {e}")
+        finally:
+            conn.close()
+    else:
+        print("Failed to establish connection to database.")
+
+# Define the directory path and Excel file path
+directory_path = 'GEM/2024/B'  # Replace with your directory path
+excel_path = "GemProjectBidTest.xlsx"  # Replace with your desired Excel file path
+
+# Define all column headers including existing ones and those extracted from PDFs
+all_columns = [
+    'TenderNumber', 'TenderEndSubmissionDateTime', 'ContactNumber', 'TenderType',
+    'TenderOpeningDateTime', 'ContactAddress', 'NameOfWebSite', 'CrawlingDateTime',
+    'EarnestMoneyDeposite', 'TenderEstimatedCost', 'Address', 'RequirementWorkBrief',
+    'TenderProdNo', 'ContactPhone2', 'TenderDetailWorkDescription', 'HTMLcontent', 'Document', 'OrganizationName'
+]
+
+# Create the initial table if it does not exist
+create_temp_table_tenders()
+
+# Iterate through each PDF file in the directory
 for filename in os.listdir(directory_path):
-    if filename.endswith('.pdf'):
+    if filename.endswith(".pdf"):
         pdf_path = os.path.join(directory_path, filename)
-
-        # Extract tender number from pdf_path
-        tender_number = pdf_path.replace('_0.pdf', '')
-
-        if tender_number in existing_tenders:
-            print(f"Tender {tender_number} has already been crawled. Skipping...")
-            continue
-
-        extracted_data = extract_from_pdf(pdf_path, pdf_path)  # Pass pdf_path as the pdf_path parameter
-        if extracted_data:
-            extracted_data_list.append(extracted_data)
-
-            # Insert extracted data into the database
-            insert_into_database(extracted_data)
-
-        # Add the tender number to existing tenders set
-        existing_tenders.add(tender_number)
-
-# Create a DataFrame with the extracted data
-df_new = pd.DataFrame(extracted_data_list)
-
-# Append new data to the existing DataFrame
-df_combined = pd.concat([df_existing, df_new], ignore_index=True, sort=False)
-
-# Save the combined DataFrame to the Excel file
-with pd.ExcelWriter(excel_path, engine='openpyxl', mode='w') as writer:
-    df_combined.to_excel(writer, index=False)
-
-print(f"Data has been successfully written to {excel_path}")
+        extracted_data = extract_from_pdf(pdf_path)
+        insert_into_database(extracted_data)
